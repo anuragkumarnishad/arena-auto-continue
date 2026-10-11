@@ -1,5 +1,7 @@
 # ⚡ Arena Auto Continue
 
+**Latest: v2.0** — redesigned glassmorphism panel, color-coded status, live stat chips. ✨
+
 Keep your Arena.ai agent working while you're away. It automatically sends
 `continue` / `next` / `yes` / random positive messages, and clicks Arena's
 **"Keep working"** button whenever the "Was this task successful?" box appears.

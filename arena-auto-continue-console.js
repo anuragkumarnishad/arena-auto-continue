@@ -1,55 +1,217 @@
 (function () {
   'use strict';
 
-  // Purani v1.2+ instance ho toh use saaf karo
+  // Purani instance saaf karo
   if (window.__acCleanup) {
-    try {
-      window.__acCleanup();
-    } catch (e) {}
+    try { window.__acCleanup(); } catch (e) {}
   }
-
-  // Sirf main frame me chalo (iframe duplication se bachne ke liye)
+  // Sirf main frame
   if (window.self !== window.top) return;
 
-  // ================= SETTINGS =================
+  /* ================= CONFIG ================= */
   const POSITIVE = [
-    'continue',
-    'next',
-    'yes',
-    'yes, continue',
-    'proceed',
-    'keep going',
-    'perfect, continue',
-    'ok, next',
-    'sounds good, go ahead',
-    'yes please',
-    'sure, keep going',
-    'haan, aage badho',
-    'theek hai, continue karo',
-    'badiya, next step karo',
-    'ok bhai, proceed',
-    'haan bilkul'
+    'continue', 'next', 'yes', 'yes, continue', 'proceed', 'keep going',
+    'perfect, continue', 'ok, next', 'sounds good, go ahead', 'yes please',
+    'sure, keep going', 'haan, aage badho', 'theek hai, continue karo',
+    'badiya, next step karo', 'ok bhai, proceed', 'haan bilkul'
   ];
-  const MAX_ACTIONS = 300; // itne actions ke baad script khud ruk jayegi (safety)
-  const MAX_HOURS = 10; // ya itne ghanton ke baad
+  const MAX_ACTIONS = 300;
+  const MAX_HOURS = 10;
 
-  let intervalSec = Math.max(5, Number(localStorage.getItem('arena-ac-interval') || 30));
-  let msgMode = localStorage.getItem('arena-ac-msg') || 'continue';
-  let running = false;
-  let timer = null;
-  let toggleBtnEl = null;
-  let captchaFlag = false;
-  let kwSeen = false;
-  const stats = { sent: 0, kw: 0, captcha: 0, startedAt: 0 };
+  const state = {
+    running: false,
+    timer: null,
+    intervalSec: Math.max(5, Number(localStorage.getItem('arena-ac-interval')) || 45),
+    msgMode: localStorage.getItem('arena-ac-msg') || 'random',
+    kwSeen: false,
+    captchaSeen: false,
+    stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
+  };
 
   function pickMessage() {
-    return msgMode === 'random'
+    return state.msgMode === 'random'
       ? POSITIVE[Math.floor(Math.random() * POSITIVE.length)]
-      : msgMode;
+      : state.msgMode;
   }
 
-  // ================= TAB KEEP-ALIVE =================
-  // Halka sa silent audio: background tab ko browser sone nahi deta
+  /* ================= STYLES ================= */
+  const style = document.createElement('style');
+  style.textContent = [
+    '#ac-panel{position:fixed;top:14px;right:14px;z-index:2147483647;width:282px;',
+    'background:rgba(10,15,30,.93);backdrop-filter:blur(12px);',
+    'border:1px solid rgba(99,102,241,.35);border-radius:16px;',
+    'box-shadow:0 12px 40px rgba(0,0,0,.55);color:#e2e8f0;',
+    'font:12px/1.5 "Segoe UI",system-ui,sans-serif;overflow:hidden;}',
+    '#ac-head{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:move;',
+    'background:linear-gradient(90deg,rgba(99,102,241,.28),rgba(16,185,129,.18));}',
+    '.ac-dot{width:8px;height:8px;border-radius:50%;background:#64748b;box-shadow:0 0 0 rgba(0,0,0,0);transition:all .3s;}',
+    '.ac-dot.on{background:#22c55e;box-shadow:0 0 10px #22c55e;}',
+    '.ac-ver{font-size:10px;background:rgba(99,102,241,.3);border-radius:999px;padding:1px 7px;}',
+    '#ac-head .sp{flex:1;}',
+    '.ac-ibtn{background:rgba(30,41,59,.9);color:#e2e8f0;border:1px solid rgba(99,102,241,.3);',
+    'border-radius:7px;width:24px;height:24px;cursor:pointer;font-size:12px;}',
+    '.ac-ibtn:hover{filter:brightness(1.3);}',
+    '#ac-body{padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;}',
+    '.ac-row{display:flex;align-items:center;gap:6px;}',
+    '.ac-input{background:rgba(30,41,59,.9);border:1px solid rgba(99,102,241,.35);color:#fff;',
+    'border-radius:8px;padding:4px 6px;font:inherit;}',
+    '#ac-interval{width:52px;}',
+    '#ac-msg{flex:1;}',
+    '#ac-toggle{border:none;border-radius:10px;padding:9px;font-weight:700;font-size:13px;',
+    'cursor:pointer;color:#052e16;background:linear-gradient(90deg,#22c55e,#10b981);transition:filter .2s;}',
+    '#ac-toggle.stop{color:#fff;background:linear-gradient(90deg,#ef4444,#f97316);}',
+    '#ac-toggle:hover{filter:brightness(1.1);}',
+    '#ac-status{padding:6px 9px;border-radius:9px;background:rgba(148,163,184,.12);',
+    'border-left:3px solid #64748b;min-height:30px;transition:border-color .3s;}',
+    '#ac-status.ok{border-left-color:#22c55e;}',
+    '#ac-status.wait{border-left-color:#f59e0b;}',
+    '#ac-status.warn{border-left-color:#ef4444;}',
+    '#ac-stats{display:flex;gap:5px;flex-wrap:wrap;}',
+    '.ac-chip{background:rgba(148,163,184,.14);border-radius:999px;padding:2px 8px;font-size:11px;}'
+  ].join('\n');
+  document.head.appendChild(style);
+
+  /* ================= UI ================= */
+  let toggleBtnEl = null;
+
+  function initPanel() {
+    if (document.getElementById('ac-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'ac-panel';
+    panel.innerHTML = [
+      '<div id="ac-head">',
+      '<span class="ac-dot" id="ac-dot"></span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.0</span>',
+      '<span class="sp"></span>',
+      '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
+      '<button class="ac-ibtn" id="ac-min" title="Minimize">–</button>',
+      '</div>',
+      '<div id="ac-body">',
+      '<div class="ac-row">Har <input class="ac-input" id="ac-interval" type="number" min="5" value="' +
+        state.intervalSec + '"> sec ·',
+      '<select class="ac-input" id="ac-msg">',
+      '<option value="continue">continue</option>',
+      '<option value="next">next</option>',
+      '<option value="yes">yes</option>',
+      '<option value="random">🎲 random positive</option>',
+      '</select></div>',
+      '<button id="ac-toggle">▶ Start</button>',
+      '<div id="ac-status">Ready — Start dabao 🚀</div>',
+      '<div id="ac-stats"></div>',
+      '</div>'
+    ].join('\n');
+    document.body.appendChild(panel);
+
+    toggleBtnEl = panel.querySelector('#ac-toggle');
+    const msgSelect = panel.querySelector('#ac-msg');
+    const intervalInput = panel.querySelector('#ac-interval');
+    msgSelect.value = state.msgMode;
+
+    panel.querySelector('#ac-min').addEventListener('click', function () {
+      const body = panel.querySelector('#ac-body');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'flex' : 'none';
+      this.textContent = hidden ? '–' : '+';
+    });
+
+    panel.querySelector('#ac-report').addEventListener('click', copyReport);
+
+    intervalInput.addEventListener('change', function () {
+      state.intervalSec = Math.max(5, Number(this.value) || 45);
+      this.value = state.intervalSec;
+      localStorage.setItem('arena-ac-interval', String(state.intervalSec));
+      if (state.running) {
+        clearTimeout(state.timer);
+        scheduleNext();
+      }
+    });
+
+    msgSelect.addEventListener('change', function () {
+      state.msgMode = this.value;
+      localStorage.setItem('arena-ac-msg', state.msgMode);
+    });
+
+    toggleBtnEl.addEventListener('click', function () {
+      state.running = !state.running;
+      const dot = panel.querySelector('#ac-dot');
+      if (state.running) {
+        toggleBtnEl.textContent = '⏸ Stop';
+        toggleBtnEl.classList.add('stop');
+        dot.classList.add('on');
+        if (!state.stats.startedAt) state.stats.startedAt = Date.now();
+        setStatus('Running… ', 'ok');
+        updateStats();
+        startKeepAlive();
+        startWsKeepAlive();
+        tick();
+        scheduleNext();
+      } else {
+        toggleBtnEl.textContent = '▶ Start';
+        toggleBtnEl.classList.remove('stop');
+        dot.classList.remove('on');
+        clearTimeout(state.timer);
+        stopKeepAlive();
+        stopWsKeepAlive();
+        setStatus('Stopped', 'warn');
+      }
+    });
+
+    // Draggable
+    panel.querySelector('#ac-head').addEventListener('mousedown', function (e) {
+      if (e.target.tagName === 'BUTTON') return;
+      e.preventDefault();
+      const sx = e.clientX, sy = e.clientY;
+      const r = panel.getBoundingClientRect();
+      function mv(ev) {
+        panel.style.left = r.left + ev.clientX - sx + 'px';
+        panel.style.top = r.top + ev.clientY - sy + 'px';
+        panel.style.right = 'auto';
+      }
+      function up() {
+        document.removeEventListener('mousemove', mv);
+        document.removeEventListener('mouseup', up);
+      }
+      document.addEventListener('mousemove', mv);
+      document.addEventListener('mouseup', up);
+    });
+  }
+
+  function setStatus(msg, kind) {
+    const el = document.getElementById('ac-status');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = kind || '';
+  }
+
+  function updateStats() {
+    const el = document.getElementById('ac-stats');
+    if (!el) return;
+    const s = state.stats;
+    const mins = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 60000) : 0;
+    function chip(t) { return '<span class="ac-chip">' + t + '</span>'; }
+    el.innerHTML =
+      chip('✅ ' + s.sent) + chip('🔁 ' + s.kw) + chip('🚨 ' + s.captcha) +
+      chip('⏱ ' + mins + 'm') +
+      (s.lastTick ? chip('🕐 ' + new Date(s.lastTick).toLocaleTimeString()) : '');
+  }
+
+  function copyReport() {
+    const s = state.stats;
+    const mins = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 60000) : 0;
+    const rep =
+      '⚡ Auto-Continue v2.0 Report\n⏱ Chala: ' + mins + ' min\n✅ Messages: ' +
+      s.sent + '\n🔁 Keep working: ' + s.kw + '\n🚨 CAPTCHA: ' + s.captcha;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(rep).then(function () {
+        setStatus('📋 Report copy ho gaya!', 'ok');
+      }, function () { setStatus(rep, 'ok'); });
+    } else {
+      setStatus(rep, 'ok');
+    }
+  }
+
+  /* ================= KEEP-ALIVE ================= */
   let keepAliveAudio = null;
   function startKeepAlive() {
     if (keepAliveAudio) return;
@@ -65,14 +227,11 @@
   }
   function stopKeepAlive() {
     if (keepAliveAudio) {
-      try {
-        keepAliveAudio.pause();
-      } catch (e) {}
+      try { keepAliveAudio.pause(); } catch (e) {}
       keepAliveAudio = null;
     }
   }
 
-  // WebSocket keep-alive: active connection = browser tab ko sone nahi deta
   let keepAliveWs = null;
   let wsRetry = null;
   function startWsKeepAlive() {
@@ -81,299 +240,91 @@
       keepAliveWs = new WebSocket('wss://ws.postman-echo.com/raw');
       keepAliveWs.onclose = scheduleWsRetry;
       keepAliveWs.onerror = function () {
-        try {
-          keepAliveWs.close();
-        } catch (e) {}
+        try { keepAliveWs.close(); } catch (e) {}
       };
-    } catch (e) {
-      scheduleWsRetry();
-    }
+    } catch (e) { scheduleWsRetry(); }
   }
   function scheduleWsRetry() {
-    if (!running) return;
+    if (!state.running) return;
     clearTimeout(wsRetry);
     wsRetry = setTimeout(startWsKeepAlive, 60000);
   }
   function stopWsKeepAlive() {
     clearTimeout(wsRetry);
     if (keepAliveWs) {
-      try {
-        keepAliveWs.close();
-      } catch (e) {}
+      try { keepAliveWs.close(); } catch (e) {}
       keepAliveWs = null;
     }
   }
 
-  // ================= UI PANEL =================
-  function initPanel() {
-    if (document.getElementById('ac-panel')) return;
-
-    const panel = document.createElement('div');
-    panel.id = 'ac-panel';
-    panel.style.cssText =
-      'position:fixed;top:12px;right:12px;z-index:2147483647;' +
-      'background:#0f172a;color:#f8fafc;font:12px/1.5 system-ui,"Segoe UI",sans-serif;' +
-      'padding:12px;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.4);' +
-      'display:flex;flex-direction:column;gap:8px;width:270px;';
-
-    panel.innerHTML = [
-      '<div id="ac-head" style="display:flex;justify-content:space-between;align-items:center;cursor:move;">',
-      '<span style="font-weight:700;font-size:13px;">⚡ Auto-Continue v1.13</span>',
-      '<span style="display:flex;gap:4px;">',
-      '<button id="ac-report" title="Report copy karo" style="background:#1e293b;color:#fff;border:none;border-radius:6px;width:22px;height:22px;cursor:pointer;">📋</button>',
-      '<button id="ac-min" title="Minimize" style="background:#1e293b;color:#fff;border:none;border-radius:6px;width:22px;height:22px;cursor:pointer;">–</button>',
-      '</span>',
-      '</div>',
-      '<div id="ac-body" style="display:flex;flex-direction:column;gap:8px;">',
-      '<label style="display:flex;align-items:center;gap:6px;">Har',
-      '<input id="ac-interval" type="number" min="5" value="' + intervalSec + '"',
-      ' style="width:56px;background:#1e293b;color:#fff;border:1px solid #334155;border-radius:6px;padding:3px 6px;">',
-      'sec mein</label>',
-      '<label style="display:flex;align-items:center;gap:6px;">Message',
-      '<select id="ac-msg"',
-      ' style="flex:1;background:#1e293b;color:#fff;border:1px solid #334155;border-radius:6px;padding:3px 6px;">',
-      '<option value="continue">continue</option>',
-      '<option value="next">next</option>',
-      '<option value="yes">yes</option>',
-      '<option value="random">🎲 random positive</option>',
-      '</select></label>',
-      '<button id="ac-toggle"',
-      ' style="background:#22c55e;color:#052e16;font-weight:700;border:none;border-radius:8px;padding:8px;cursor:pointer;">▶ Start</button>',
-      '<div id="ac-status" style="opacity:.85;min-height:28px;">Ready</div>',
-      '<div id="ac-stats" style="opacity:.7;"></div>',
-      '</div>'
-    ].join('\n');
-    document.body.appendChild(panel);
-
-    toggleBtnEl = panel.querySelector('#ac-toggle');
-    const statusEl = panel.querySelector('#ac-status');
-    const intervalInput = panel.querySelector('#ac-interval');
-    const msgSelect = panel.querySelector('#ac-msg');
-    const minBtn = panel.querySelector('#ac-min');
-    const body = panel.querySelector('#ac-body');
-    msgSelect.value = msgMode;
-
-    window.__acStatus = function (msg) {
-      statusEl.textContent = msg;
-    };
-
-    minBtn.addEventListener('click', function () {
-      const hidden = body.style.display === 'none';
-      body.style.display = hidden ? 'flex' : 'none';
-      minBtn.textContent = hidden ? '–' : '+';
-    });
-
-    // Report button: pura hisaab clipboard pe
-    const reportBtn = panel.querySelector('#ac-report');
-    reportBtn.addEventListener('click', function () {
-      const mins = stats.startedAt
-        ? Math.floor((Date.now() - stats.startedAt) / 60000)
-        : 0;
-      const rep =
-        '⚡ Auto-Continue Report\n⏱ Chala: ' + mins + ' min\n✅ Messages: ' +
-        stats.sent + '\n🔁 Keep working: ' + stats.kw + '\n🚨 CAPTCHA: ' + stats.captcha;
-      const done = function () {
-        setStatus('📋 Report copy ho gaya! Kahin bhi paste karo.');
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(rep).then(done, function () {
-          setStatus(rep);
-        });
-      } else {
-        setStatus(rep);
-      }
-    });
-
-    // Draggable panel: header pakad ke kahin bhi le jao
-    const head = panel.querySelector('#ac-head');
-    head.addEventListener('mousedown', function (e) {
-      if (e.target.tagName === 'BUTTON') return;
-      e.preventDefault();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const rect = panel.getBoundingClientRect();
-      function move(ev) {
-        panel.style.left = rect.left + ev.clientX - startX + 'px';
-        panel.style.top = rect.top + ev.clientY - startY + 'px';
-        panel.style.right = 'auto';
-      }
-      function up() {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
-      }
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
-    });
-
-    intervalInput.addEventListener('change', function () {
-      intervalSec = Math.max(5, Number(intervalInput.value) || 30);
-      intervalInput.value = intervalSec;
-      localStorage.setItem('arena-ac-interval', String(intervalSec));
-      if (running) {
-        clearTimeout(timer);
-        scheduleNext();
-      }
-    });
-
-    msgSelect.addEventListener('change', function () {
-      msgMode = msgSelect.value;
-      localStorage.setItem('arena-ac-msg', msgMode);
-    });
-
-    toggleBtnEl.addEventListener('click', function () {
-      running = !running;
-      if (running) {
-        toggleBtnEl.textContent = '⏸ Stop';
-        toggleBtnEl.style.background = '#ef4444';
-        toggleBtnEl.style.color = '#fff';
-        if (!stats.startedAt) stats.startedAt = Date.now();
-        window.__acStatus('Running…');
-        updateStats();
-        startKeepAlive();
-        startWsKeepAlive();
-        tick(); // turant ek baar try karo (test)
-        scheduleNext();
-      } else {
-        toggleBtnEl.textContent = '▶ Start';
-        toggleBtnEl.style.background = '#22c55e';
-        toggleBtnEl.style.color = '#052e16';
-        clearTimeout(timer);
-        stopKeepAlive();
-        stopWsKeepAlive();
-        window.__acStatus('Stopped');
-      }
-    });
-  }
-
-  function updateStats() {
-    const el = document.getElementById('ac-stats');
-    if (!el) return;
-    const mins = stats.startedAt
-      ? Math.floor((Date.now() - stats.startedAt) / 60000)
-      : 0;
-    el.textContent =
-      '📊 Msg: ' + stats.sent + ' | KW: ' + stats.kw + ' | 🚨 ' + stats.captcha +
-      ' | ⏱ ' + mins + ' min' +
-      (stats.lastTick ? ' | 🕐 ' + new Date(stats.lastTick).toLocaleTimeString() : '');
-  }
-
-  // Agla tick: human-jaisa random gap + kabhi-kabhi chai break
+  /* ================= SCHEDULER ================= */
   function scheduleNext() {
-    // interval ka 1x se 2x tak random wait
-    let wait = intervalSec + Math.floor(Math.random() * intervalSec);
-    // 12% chance: lamba break (2-5 min extra) — insaan break leta hai
+    // Human jaisa: interval ka 1x-2x random + kabhi chai break
+    let wait = state.intervalSec + Math.floor(Math.random() * state.intervalSec);
     if (Math.random() < 0.12) {
       wait += 120 + Math.floor(Math.random() * 180);
-      setStatus('☕ Chai break — 2-4 min ke liye ruka hoon');
+      setStatus('☕ Chai break — 2-4 min ruka hoon', 'wait');
     }
-    timer = setTimeout(function () {
+    state.timer = setTimeout(function () {
       tick();
-      if (running) scheduleNext();
+      if (state.running) scheduleNext();
     }, wait * 1000);
   }
 
-  // Agle paste ke liye cleanup handle
   window.__acCleanup = function () {
-    running = false;
-    if (timer) clearTimeout(timer);
+    state.running = false;
+    clearTimeout(state.timer);
     stopKeepAlive();
     stopWsKeepAlive();
     const p = document.getElementById('ac-panel');
     if (p) p.remove();
-    delete window.__acStatus;
+    const st = document.getElementById('ac-style');
+    if (st) st.remove();
   };
 
-  // Panel hamesha banao — page ke state pe depend nahi karta
-  if (document.body) {
-    initPanel();
-  } else {
-    document.addEventListener('DOMContentLoaded', initPanel);
+  /* ================= DOM HELPERS ================= */
+  function isVisible(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return false;
+    const cs = window.getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.05;
   }
 
-  function setStatus(msg) {
-    if (window.__acStatus) window.__acStatus(msg);
-  }
-  function now() {
-    return new Date().toLocaleTimeString();
-  }
-
-  // ================= CAPTCHA DETECT =================
-  // Sirf TAB detect karo jab CAPTCHA asli me DIKH raha ho (hidden iframes pe nahi)
-  function captchaPresent() {
-    const sel =
-      'iframe[src*="captcha" i], iframe[src*="turnstile" i], iframe[src*="hcaptcha" i], iframe[src*="recaptcha" i], [class*="captcha" i], [id*="captcha" i], [class*="turnstile" i]';
-    const els = document.querySelectorAll(sel);
-    for (const el of els) {
-      if (isVisible(el)) return true;
-    }
-    // Sirf pakke human-check phrases (job-content se false alarm na ho)
-    const t = (document.body && document.body.innerText) || '';
-    return /verify you are (a )?human|prove you.?re (a )?human|are you a robot|complete the (captcha )?check/i.test(
-      t.slice(0, 3000)
-    );
-  }
-
-  // ================= CHAT HELPERS =================
   function findInput() {
     const selectors = ['textarea', 'div[contenteditable="true"]', '[role="textbox"]'];
     const candidates = [];
     for (const sel of selectors) {
       for (const el of document.querySelectorAll(sel)) {
         const rect = el.getBoundingClientRect();
-        if (rect.width > 50 && rect.height > 10) {
-          // sirf viewport ke andar wale elements
-          if (rect.bottom > 0 && rect.top < window.innerHeight) {
-            candidates.push({ el: el, top: rect.top });
-          }
+        if (rect.width > 50 && rect.height > 10 && rect.bottom > 0 && rect.top < window.innerHeight) {
+          candidates.push({ el: el, top: rect.top });
         }
       }
     }
     if (!candidates.length) return null;
-    // sabse neeche wala = asli chat composer
-    candidates.sort(function (a, b) {
-      return b.top - a.top;
-    });
+    candidates.sort(function (a, b) { return b.top - a.top; });
     return candidates[0].el;
-  }
-
-  function isVisible(el) {
-    const r = el.getBoundingClientRect();
-    if (r.width < 4 || r.height < 4) return false;
-    const cs = window.getComputedStyle(el);
-    return (
-      cs.visibility !== 'hidden' &&
-      cs.display !== 'none' &&
-      Number(cs.opacity) > 0.05
-    );
   }
 
   function findKeepWorking() {
     const els = document.querySelectorAll('button, [role="button"]');
     for (const el of els) {
-      if (/keep\s*working/i.test(el.textContent || '')) {
-        if (isVisible(el)) return el;
-      }
+      if (/keep\s*working/i.test(el.textContent || '') && isVisible(el)) return el;
     }
     return null;
   }
 
   function hasStopButton() {
     for (const btn of document.querySelectorAll('button')) {
-      const label = (
-        (btn.getAttribute('aria-label') || '') + ' ' +
-        (btn.title || '')
-      ).toLowerCase();
-      if (/stop|abort/.test(label)) {
-        if (isVisible(btn)) return true;
-      }
+      const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.title || '')).toLowerCase();
+      if (/stop|abort/.test(label) && isVisible(btn)) return true;
     }
     return false;
   }
 
   function findSendButton(inputEl) {
     const form = inputEl.closest && inputEl.closest('form');
-    const container =
-      inputEl.closest &&
+    const container = inputEl.closest &&
       inputEl.closest('[class*="composer"], [class*="chat"], [class*="prompt"]');
     const scopes = [];
     if (form) scopes.push(form);
@@ -381,14 +332,10 @@
     scopes.push(document);
 
     function score(btn, inForm) {
-      if (btn.disabled) return -1;
-      const r = btn.getBoundingClientRect();
-      if (r.width < 5 || r.height < 5) return -1;
+      if (btn.disabled || !isVisible(btn)) return -1;
       const label = (
-        (btn.getAttribute('aria-label') || '') + ' ' +
-        (btn.title || '') + ' ' +
-        btn.textContent + ' ' +
-        (btn.getAttribute('data-testid') || '')
+        (btn.getAttribute('aria-label') || '') + ' ' + (btn.title || '') + ' ' +
+        btn.textContent + ' ' + (btn.getAttribute('data-testid') || '')
       ).toLowerCase();
       let s = 0;
       if (/send|bhejo/.test(label)) s += 6;
@@ -401,40 +348,27 @@
     for (let i = 0; i < scopes.length; i++) {
       const scope = scopes[i];
       const inForm = scope === form;
-      let best = null;
-      let bestScore = 0;
+      let best = null, bestScore = 0;
       scope.querySelectorAll('button').forEach(function (btn) {
         const s = score(btn, inForm);
-        if (s > bestScore) {
-          best = btn;
-          bestScore = s;
-        }
+        if (s > bestScore) { best = btn; bestScore = s; }
       });
-      const need = scope === document ? 6 : 4; // pure page pe sirf pakka send button
-      if (best && bestScore >= need) return best;
+      if (best && bestScore >= (scope === document ? 6 : 4)) return best;
     }
-
-    // Last fallback: form ka koi bhi enabled button
     if (form) {
       for (const btn of form.querySelectorAll('button')) {
-        if (!btn.disabled) {
-          const r = btn.getBoundingClientRect();
-          if (r.width > 5 && r.height > 5) return btn;
-        }
+        if (!btn.disabled && isVisible(btn)) return btn;
       }
     }
     return null;
   }
 
   function inputText(el) {
-    return el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
-      ? el.value
-      : el.textContent;
+    return el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' ? el.value : el.textContent;
   }
 
   function setInputText(el, text) {
     el.focus();
-    // pehle existing content select karo taaki replace ho
     if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
       if (el.select) el.select();
     } else if (el.isContentEditable) {
@@ -444,181 +378,158 @@
       sel.removeAllRanges();
       sel.addRange(range);
     }
-    // insertText: contenteditable/React editors ke liye sabse reliable
     let ok = false;
-    try {
-      ok = document.execCommand('insertText', false, text);
-    } catch (e) {
-      ok = false;
-    }
+    try { ok = document.execCommand('insertText', false, text); } catch (e) { ok = false; }
     if (!ok) {
       if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-        const proto =
-          el.tagName === 'TEXTAREA'
-            ? window.HTMLTextAreaElement.prototype
-            : window.HTMLInputElement.prototype;
+        const proto = el.tagName === 'TEXTAREA'
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
         Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (el.isContentEditable) {
         el.textContent = text;
-        el.dispatchEvent(
-          new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })
-        );
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
       }
     }
   }
 
   function pressEnter(el) {
     ['keydown', 'keypress', 'keyup'].forEach(function (type) {
-      el.dispatchEvent(
-        new KeyboardEvent(type, {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true
-        })
-      );
+      el.dispatchEvent(new KeyboardEvent(type, {
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+        bubbles: true, cancelable: true
+      }));
     });
   }
 
+  /* ================= CAPTCHA ================= */
+  function captchaPresent() {
+    const sel =
+      'iframe[src*="captcha" i], iframe[src*="turnstile" i], iframe[src*="hcaptcha" i], iframe[src*="recaptcha" i], [class*="captcha" i], [id*="captcha" i], [class*="turnstile" i]';
+    const els = document.querySelectorAll(sel);
+    for (const el of els) if (isVisible(el)) return true;
+    const t = (document.body && document.body.innerText) || '';
+    return /verify you are (a )?human|prove you.?re (a )?human|are you a robot|complete the (captcha )?check/i.test(
+      t.slice(0, 3000)
+    );
+  }
+
+  /* ================= SENDING ================= */
   function attemptSend(input, msg) {
-    // Try 1: send button click
     const btn = findSendButton(input);
     if (btn && !btn.disabled) {
       btn.click();
       verifySent(input, msg, 'Send button');
       return;
     }
-    // Try 2: form submit
     const form = input.closest && input.closest('form');
     if (form && form.requestSubmit) {
       try {
         form.requestSubmit();
         verifySent(input, msg, 'Form submit');
         return;
-      } catch (e) {
-        /* ignore */
-      }
+      } catch (e) {}
     }
-    // Try 3: Enter key
     pressEnter(input);
     verifySent(input, msg, 'Enter key');
   }
 
-  function markSent() {
-    stats.sent++;
-    updateStats();
-  }
-
   function verifySent(input, msg, how) {
     setTimeout(function () {
-      if (!input.isConnected) {
-        markSent();
-        setStatus('✅ "' + msg + '" gaya (' + how + ') @ ' + now());
+      const gone = !input.isConnected || inputText(input).trim() === '';
+      if (gone) {
+        state.stats.sent++;
+        updateStats();
+        setStatus('✅ "' + msg + '" sent (' + how + ')', 'ok');
         return;
       }
-      if (inputText(input).trim() === '') {
-        markSent();
-        setStatus('✅ "' + msg + '" sent via ' + how + ' @ ' + now());
-        return;
-      }
-      // Text abhi bhi pada hai — Enter se ek aur koshish
       pressEnter(input);
       setTimeout(function () {
         if (!input.isConnected || inputText(input).trim() === '') {
-          markSent();
-          setStatus('✅ "' + msg + '" sent via Enter (2nd try) @ ' + now());
+          state.stats.sent++;
+          updateStats();
+          setStatus('✅ "' + msg + '" sent (Enter 2nd try)', 'ok');
         } else {
-          setStatus('⚠️ Text type hua (' + how + ') par SEND nahi hua — input me pada hai');
+          setStatus('⚠️ Text type hua par SEND nahi hua', 'warn');
         }
       }, 700);
     }, 700);
   }
 
-  // ================= MAIN LOOP =================
+  /* ================= MAIN LOOP ================= */
   function tick() {
-    if (!running) return;
-    stats.lastTick = Date.now(); // heartbeat
+    if (!state.running) return;
+    state.stats.lastTick = Date.now();
     updateStats();
     try {
-      // Safety limit
-      const totalActions = stats.sent + stats.kw;
-      if (
-        stats.startedAt &&
-        (totalActions >= MAX_ACTIONS ||
-          Date.now() - stats.startedAt > MAX_HOURS * 3600000)
-      ) {
-        running = false;
-        clearTimeout(timer);
+      const s = state.stats;
+      const total = s.sent + s.kw;
+
+      // Safety brake
+      if (s.startedAt && (total >= MAX_ACTIONS || Date.now() - s.startedAt > MAX_HOURS * 3600000)) {
+        state.running = false;
+        clearTimeout(state.timer);
         stopKeepAlive();
         stopWsKeepAlive();
         if (toggleBtnEl) {
           toggleBtnEl.textContent = '▶ Start';
-          toggleBtnEl.style.background = '#22c55e';
-          toggleBtnEl.style.color = '#052e16';
+          toggleBtnEl.classList.remove('stop');
         }
-        setStatus('🏁 Safety limit poori (' + totalActions + ' actions) — script khud ruki.');
+        setStatus('🏁 Safety limit poori (' + total + ' actions) — khud ruka.', 'warn');
         return;
       }
 
       // CAPTCHA guard
-      const cp = captchaPresent();
-      if (cp) {
-        if (!captchaFlag) {
-          stats.captcha++;
-          updateStats();
-        }
-        captchaFlag = true;
-        setStatus('🚨 CAPTCHA aa gaya! Ghar aake solve karna — tab tak script paused.');
+      if (captchaPresent()) {
+        if (!state.captchaSeen) { s.captcha++; updateStats(); }
+        state.captchaSeen = true;
+        setStatus('🚨 CAPTCHA! Solve karo — script paused.', 'warn');
         return;
       }
-      captchaFlag = false;
+      state.captchaSeen = false;
 
-      // Arena ka apna "Keep working" button dikhe toh wahi dabao
+      // Keep working (ek cycle "padhne" ka natak)
       const kw = findKeepWorking();
       if (kw) {
-        if (!kwSeen) {
-          // Insaan pehle padhta hai, phir dabata hai — ek cycle ruko
-          kwSeen = true;
-          setStatus('📖 Reply padh raha hoon… abhi Keep working dabayega');
+        if (!state.kwSeen) {
+          state.kwSeen = true;
+          setStatus('📖 Reply padh raha hoon…', 'wait');
           return;
         }
-        kwSeen = false;
+        state.kwSeen = false;
         kw.click();
-        stats.kw++;
+        s.kw++;
         updateStats();
-        setStatus('✅ "Keep working" dabaya @ ' + now());
+        setStatus('✅ "Keep working" dabaya', 'ok');
         return;
       }
-      kwSeen = false;
+      state.kwSeen = false;
+
       if (hasStopButton()) {
-        setStatus('AI reply likh rahi hai… wait ⏳');
+        setStatus('AI reply likh rahi hai… wait ⏳', 'wait');
         return;
       }
+
       const input = findInput();
-      if (!input) {
-        setStatus('Is frame me input box nahi mila 😕');
-        return;
-      }
-      if (input.disabled || input.readOnly) {
-        setStatus('Input disabled hai — AI busy ⏳');
-        return;
-      }
+      if (!input) { setStatus('Input box nahi mila 😕', 'warn'); return; }
+      if (input.disabled || input.readOnly) { setStatus('Input disabled — AI busy ⏳', 'wait'); return; }
       const existing = inputText(input).trim();
       if (existing !== '') {
-        setStatus('✋ Input me text hai: "' + existing.slice(0, 30) + '" — skip');
+        setStatus('✋ Input me text hai: "' + existing.slice(0, 25) + '" — skip', 'warn');
         return;
       }
+
       const msg = pickMessage();
       setInputText(input, msg);
-      setTimeout(function () {
-        attemptSend(input, msg);
-      }, 400);
+      setTimeout(function () { attemptSend(input, msg); }, 400);
     } catch (err) {
-      setStatus('⚠️ Error: ' + err.message);
+      setStatus('⚠️ Error: ' + err.message, 'warn');
     }
   }
+
+  /* ================= BOOT ================= */
+  if (document.body) initPanel();
+  else document.addEventListener('DOMContentLoaded', initPanel);
 })();
