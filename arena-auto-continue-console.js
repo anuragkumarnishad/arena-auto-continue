@@ -25,6 +25,8 @@
     msgMode: localStorage.getItem('arena-ac-msg') || 'random',
     kwSeen: false,
     captchaSeen: false,
+    queue: '',
+    sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
   };
 
@@ -67,7 +69,12 @@
     '#ac-status.wait{border-left-color:#f59e0b;}',
     '#ac-status.warn{border-left-color:#ef4444;}',
     '#ac-stats{display:flex;gap:5px;flex-wrap:wrap;}',
-    '.ac-chip{background:rgba(148,163,184,.14);border-radius:999px;padding:2px 8px;font-size:11px;}'
+    '.ac-chip{background:rgba(148,163,184,.14);border-radius:999px;padding:2px 8px;font-size:11px;}',
+    '#ac-queue{width:100%;resize:vertical;min-height:40px;}',
+    '.ac-qbtn{flex:1;border:none;border-radius:9px;padding:7px;font-weight:700;cursor:pointer;',
+    'color:#fff;background:linear-gradient(90deg,#6366f1,#8b5cf6);transition:filter .2s;}',
+    '.ac-qbtn:hover{filter:brightness(1.15);}',
+    '.ac-chk{display:flex;align-items:center;gap:4px;font-size:11px;opacity:.85;cursor:pointer;}'
   ].join('\n');
   document.head.appendChild(style);
 
@@ -82,7 +89,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.0</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.1</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-min" title="Minimize">–</button>',
@@ -96,6 +103,11 @@
       '<option value="yes">yes</option>',
       '<option value="random">🎲 random positive</option>',
       '</select></div>',
+      '<textarea class="ac-input" id="ac-queue" rows="2"',
+      ' placeholder="📨 Apna message queue karo — AI ka current kaam khatam hote hi chala jayega..."></textarea>',
+      '<div class="ac-row"><button class="ac-qbtn" id="ac-qbtn">📨 Queue karo</button>',
+      '<label class="ac-chk"><input type="checkbox" id="ac-draft"' +
+        (state.sendDraft ? ' checked' : '') + '> composer draft auto</label></div>',
       '<button id="ac-toggle">▶ Start</button>',
       '<div id="ac-status">Ready — Start dabao 🚀</div>',
       '<div id="ac-stats"></div>',
@@ -116,6 +128,22 @@
     });
 
     panel.querySelector('#ac-report').addEventListener('click', copyReport);
+
+    panel.querySelector('#ac-qbtn').addEventListener('click', function () {
+      const ta = panel.querySelector('#ac-queue');
+      state.queue = ta.value.trim();
+      if (!state.queue) {
+        setStatus('Queue khali hai — pehle message likho!', 'warn');
+        return;
+      }
+      ta.value = '';
+      setStatus('📨 Queue set: "' + state.queue.slice(0, 30) + '" — AI free hote hi jayega', 'ok');
+    });
+
+    panel.querySelector('#ac-draft').addEventListener('change', function () {
+      state.sendDraft = this.checked;
+      localStorage.setItem('arena-ac-draft', this.checked ? '1' : '0');
+    });
 
     intervalInput.addEventListener('change', function () {
       state.intervalSec = Math.max(5, Number(this.value) || 45);
@@ -314,6 +342,15 @@
     return null;
   }
 
+  function findYesButton() {
+    const els = document.querySelectorAll('button, [role="button"]');
+    for (const el of els) {
+      const t = (el.textContent || '').trim();
+      if (/^yes$/i.test(t) && isVisible(el)) return el;
+    }
+    return null;
+  }
+
   function hasStopButton() {
     for (const btn of document.querySelectorAll('button')) {
       const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.title || '')).toLowerCase();
@@ -490,9 +527,21 @@
       }
       state.captchaSeen = false;
 
-      // Keep working (ek cycle "padhne" ka natak)
+      // Feedback widget ("Was this task successful?") khula hai?
+      const haveQueue = state.queue.trim() !== '';
       const kw = findKeepWorking();
       if (kw) {
+        if (haveQueue || state.sendDraft) {
+          // Queue/draft bhejna hai → pehle Yes se widget band karo, composer wapas aayega
+          const yes = findYesButton();
+          if (yes) {
+            yes.click();
+            setStatus('✅ "Yes" dabaya — ab queue/draft message bhejega', 'ok');
+          } else {
+            setStatus('Widget khula hai, Yes nahi mila… wait', 'wait');
+          }
+          return;
+        }
         if (!state.kwSeen) {
           state.kwSeen = true;
           setStatus('📖 Reply padh raha hoon…', 'wait');
@@ -508,7 +557,10 @@
       state.kwSeen = false;
 
       if (hasStopButton()) {
-        setStatus('AI reply likh rahi hai… wait ⏳', 'wait');
+        setStatus(
+          haveQueue ? 'AI busy — free hote hi QUEUE message jayega ⏳' : 'AI reply likh rahi hai… wait ⏳',
+          'wait'
+        );
         return;
       }
 
@@ -516,14 +568,37 @@
       if (!input) { setStatus('Input box nahi mila 😕', 'warn'); return; }
       if (input.disabled || input.readOnly) { setStatus('Input disabled — AI busy ⏳', 'wait'); return; }
       const existing = inputText(input).trim();
-      if (existing !== '') {
-        setStatus('✋ Input me text hai: "' + existing.slice(0, 25) + '" — skip', 'warn');
+
+      // Queue message ya composer draft bhejo
+      let msg = null;
+      let fromQueue = false;
+      if (haveQueue) {
+        msg = state.queue;
+        fromQueue = true;
+      } else if (state.sendDraft && existing !== '') {
+        msg = existing;
+      }
+      if (msg) {
+        if (fromQueue) setInputText(input, msg);
+        const sentMsg = msg;
+        setTimeout(function () { attemptSend(input, sentMsg); }, 300);
+        if (fromQueue) {
+          state.queue = '';
+          setStatus('📨 Queue message bheja: "' + sentMsg.slice(0, 30) + '"', 'ok');
+        } else {
+          setStatus('✍️ Composer draft bheja: "' + sentMsg.slice(0, 30) + '"', 'ok');
+        }
         return;
       }
 
-      const msg = pickMessage();
-      setInputText(input, msg);
-      setTimeout(function () { attemptSend(input, msg); }, 400);
+      if (existing !== '') {
+        setStatus('✋ Input me text hai (draft auto OFF) — skip', 'warn');
+        return;
+      }
+
+      const rnd = pickMessage();
+      setInputText(input, rnd);
+      setTimeout(function () { attemptSend(input, rnd); }, 400);
     } catch (err) {
       setStatus('⚠️ Error: ' + err.message, 'warn');
     }
