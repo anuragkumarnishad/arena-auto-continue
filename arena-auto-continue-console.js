@@ -90,7 +90,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.2</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.3</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-min" title="Minimize">–</button>',
@@ -107,7 +107,8 @@
       '<textarea class="ac-input" id="ac-queue" rows="2"',
       ' placeholder="📨 Apna message queue karo — AI ka current kaam khatam hote hi chala jayega..."></textarea>',
       '<div class="ac-row"><button class="ac-qbtn" id="ac-qbtn">📨 Queue karo</button>',
-      '<button class="ac-ibtn" id="ac-photo" title="Photo queue karo" style="width:32px;height:32px;font-size:15px;">📷</button>',
+      '<button class="ac-ibtn" id="ac-photo" title="Photo file se lo" style="width:32px;height:32px;font-size:15px;">📷</button>',
+      '<button class="ac-ibtn" id="ac-clip" title="Clipboard se photo (Ctrl+V wala screenshot)" style="width:32px;height:32px;font-size:15px;">📋</button>',
       '<label class="ac-chk"><input type="checkbox" id="ac-draft"' +
         (state.sendDraft ? ' checked' : '') + '> draft auto</label></div>',
       '<button id="ac-toggle">▶ Start</button>',
@@ -160,6 +161,39 @@
       if (fileSel.files && fileSel.files[0]) {
         state.photoFile = fileSel.files[0];
         setStatus('📷 Photo ready: ' + state.photoFile.name + ' — agle message ke saath jayegi', 'ok');
+      }
+    });
+
+    // Clipboard button: screenshot copy karke 📋 dabao
+    panel.querySelector('#ac-clip').addEventListener('click', function () {
+      if (!navigator.clipboard || !navigator.clipboard.read) {
+        setStatus('Clipboard read support nahi — 📷 use karo', 'warn');
+        return;
+      }
+      navigator.clipboard.read().then(function (items) {
+        for (let i = 0; i < items.length; i++) {
+          const type = items[i].types.find(function (t) { return t.indexOf('image/') === 0; });
+          if (type) {
+            items[i].getType(type).then(function (blob) {
+              state.photoFile = new File([blob], 'clipboard-' + Date.now() + '.png', { type: type });
+              setStatus('📋 Clipboard photo READY — agle message ke saath jayegi', 'ok');
+            });
+            return;
+          }
+        }
+        setStatus('Clipboard me photo nahi mili — pehle screenshot copy karo', 'warn');
+      }, function () {
+        setStatus('Clipboard permission nahi mili — 📷 use karo', 'warn');
+      });
+    });
+
+    // Panel ke andar kahin bhi photo paste karo (queue box me Ctrl+V)
+    panel.addEventListener('paste', function (e) {
+      const files = e.clipboardData && e.clipboardData.files;
+      if (files && files.length) {
+        state.photoFile = files[0];
+        e.preventDefault();
+        setStatus('📋 Paste hui photo ready: ' + (files[0].name || 'image'), 'ok');
       }
     });
 
@@ -490,21 +524,59 @@
     return fi;
   }
 
-  function attachPhoto(done) {
-    const fi = findFileInput();
-    if (!fi || !state.photoFile) {
-      done(false);
+  function attachPhoto(input, done) {
+    if (!state.photoFile) {
+      done(false, 'none');
       return;
     }
-    try {
-      const dt = new DataTransfer();
-      dt.items.add(state.photoFile);
-      fi.files = dt.files;
-      fi.dispatchEvent(new Event('change', { bubbles: true }));
-      setTimeout(function () { done(true); }, 1500); // upload preview ke liye wait
-    } catch (e) {
-      done(false);
+    const scope =
+      (input.closest &&
+        (input.closest('form') || input.closest('[class*="composer"], [class*="chat"]'))) ||
+      document;
+    function seen() {
+      return !!scope.querySelector(
+        'img[src^="blob:"], [class*="attachment" i], [class*="attach" i] img, [data-testid*="attach" i]'
+      );
     }
+    let dt;
+    try {
+      dt = new DataTransfer();
+      dt.items.add(state.photoFile);
+    } catch (e) {
+      done(false, 'dt');
+      return;
+    }
+
+    // Try 1: paste event (zyada tar chat UIs paste se upload karte hain)
+    try {
+      input.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, clipboardData: dt
+      }));
+    } catch (e) {}
+    setTimeout(function () {
+      if (seen()) { done(true, 'paste'); return; }
+      // Try 2: drop event
+      try {
+        input.dispatchEvent(new DragEvent('drop', {
+          bubbles: true, cancelable: true, dataTransfer: dt
+        }));
+      } catch (e) {}
+      setTimeout(function () {
+        if (seen()) { done(true, 'drop'); return; }
+        // Try 3: hidden file input change
+        const fi = findFileInput();
+        if (fi) {
+          try {
+            fi.files = dt.files;
+            fi.dispatchEvent(new Event('change', { bubbles: true }));
+          } catch (e) {}
+        }
+        setTimeout(function () {
+          const ok = seen();
+          done(ok, ok ? 'file-input' : 'blind');
+        }, 1300);
+      }, 1300);
+    }, 1300);
   }
 
   /* ================= SENDING ================= */
@@ -645,9 +717,10 @@
           ' message bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
         );
         if (hasPhoto) {
-          attachPhoto(function (ok) {
+          attachPhoto(input, function (ok, how) {
             state.photoFile = null;
-            if (!ok) setStatus('⚠️ Photo attach nahi hui, message phir bhi jayega', 'warn');
+            if (ok) setStatus('📷 Photo attach ho gayi (' + how + ') — message ja raha hai', 'ok');
+            else setStatus('⚠️ Attach detect nahi hua (' + how + ') — message phir bhi jayega', 'warn');
             fire();
           });
         } else {
