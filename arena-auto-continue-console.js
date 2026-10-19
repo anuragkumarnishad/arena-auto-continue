@@ -25,8 +25,9 @@
     msgMode: localStorage.getItem('arena-ac-msg') || 'random',
     kwSeen: false,
     captchaSeen: false,
-    queue: '',
+    queue: [],
     photoFile: null,
+    log: [],
     sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
   };
@@ -90,9 +91,10 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.3</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.4</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
+      '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
       '<button class="ac-ibtn" id="ac-min" title="Minimize">–</button>',
       '</div>',
       '<div id="ac-body">',
@@ -106,11 +108,12 @@
       '</select></div>',
       '<textarea class="ac-input" id="ac-queue" rows="2"',
       ' placeholder="📨 Apna message queue karo — AI ka current kaam khatam hote hi chala jayega..."></textarea>',
-      '<div class="ac-row"><button class="ac-qbtn" id="ac-qbtn">📨 Queue karo</button>',
-      '<button class="ac-ibtn" id="ac-photo" title="Photo file se lo" style="width:32px;height:32px;font-size:15px;">📷</button>',
-      '<button class="ac-ibtn" id="ac-clip" title="Clipboard se photo (Ctrl+V wala screenshot)" style="width:32px;height:32px;font-size:15px;">📋</button>',
+      '<div class="ac-row"><button class="ac-qbtn" id="ac-qbtn">➕ Queue</button>',
+      '<button class="ac-ibtn" id="ac-photo" title="Koi bhi file queue karo" style="width:32px;height:32px;font-size:15px;">📷</button>',
+      '<button class="ac-ibtn" id="ac-clip" title="Clipboard se photo" style="width:32px;height:32px;font-size:15px;">📋</button>',
       '<label class="ac-chk"><input type="checkbox" id="ac-draft"' +
         (state.sendDraft ? ' checked' : '') + '> draft auto</label></div>',
+      '<div id="ac-qlist" style="max-height:100px;overflow:auto;display:flex;flex-direction:column;gap:4px;"></div>',
       '<button id="ac-toggle">▶ Start</button>',
       '<div id="ac-status">Ready — Start dabao 🚀</div>',
       '<div id="ac-stats"></div>',
@@ -134,14 +137,19 @@
 
     panel.querySelector('#ac-qbtn').addEventListener('click', function () {
       const ta = panel.querySelector('#ac-queue');
-      state.queue = ta.value.trim();
-      if (!state.queue) {
-        setStatus('Queue khali hai — pehle message likho!', 'warn');
+      const text = ta.value.trim();
+      if (!text) {
+        setStatus('Pehle message likho, phir ➕ Queue dabao!', 'warn');
         return;
       }
+      state.queue.push({ type: 'msg', text: text });
       ta.value = '';
-      setStatus('📨 Queue set: "' + state.queue.slice(0, 30) + '" — AI free hote hi jayega', 'ok');
+      log('QUEUE', text.slice(0, 40));
+      renderQueue();
+      setStatus('📨 Queue #' + state.queue.length + ': "' + text.slice(0, 25) + '"', 'ok');
     });
+
+    panel.querySelector('#ac-dl').addEventListener('click', downloadReport);
 
     panel.querySelector('#ac-draft').addEventListener('change', function () {
       state.sendDraft = this.checked;
@@ -151,17 +159,14 @@
     // Photo queue: file choose karo, agle message ke saath attach hogi
     const fileSel = document.createElement('input');
     fileSel.type = 'file';
-    fileSel.accept = 'image/*';
+    fileSel.accept = '*/*';
     fileSel.style.display = 'none';
     panel.appendChild(fileSel);
     panel.querySelector('#ac-photo').addEventListener('click', function () {
       fileSel.click();
     });
     fileSel.addEventListener('change', function () {
-      if (fileSel.files && fileSel.files[0]) {
-        state.photoFile = fileSel.files[0];
-        setStatus('📷 Photo ready: ' + state.photoFile.name + ' — agle message ke saath jayegi', 'ok');
-      }
+      if (fileSel.files && fileSel.files[0]) pushQueueFile(fileSel.files[0], '📷');
     });
 
     // Clipboard button: screenshot copy karke 📋 dabao
@@ -175,8 +180,10 @@
           const type = items[i].types.find(function (t) { return t.indexOf('image/') === 0; });
           if (type) {
             items[i].getType(type).then(function (blob) {
-              state.photoFile = new File([blob], 'clipboard-' + Date.now() + '.png', { type: type });
-              setStatus('📋 Clipboard photo READY — agle message ke saath jayegi', 'ok');
+              pushQueueFile(
+                new File([blob], 'clipboard-' + Date.now() + '.png', { type: type }),
+                '📋'
+              );
             });
             return;
           }
@@ -191,11 +198,12 @@
     panel.addEventListener('paste', function (e) {
       const files = e.clipboardData && e.clipboardData.files;
       if (files && files.length) {
-        state.photoFile = files[0];
         e.preventDefault();
-        setStatus('📋 Paste hui photo ready: ' + (files[0].name || 'image'), 'ok');
+        pushQueueFile(files[0], '📋');
       }
     });
+
+    renderQueue();
 
     intervalInput.addEventListener('change', function () {
       state.intervalSec = Math.max(5, Number(this.value) || 45);
@@ -272,16 +280,12 @@
     function chip(t) { return '<span class="ac-chip">' + t + '</span>'; }
     el.innerHTML =
       chip('✅ ' + s.sent) + chip('🔁 ' + s.kw) + chip('🚨 ' + s.captcha) +
-      chip('⏱ ' + mins + 'm') +
+      chip('📬 ' + state.queue.length) + chip('⏱ ' + mins + 'm') +
       (s.lastTick ? chip('🕐 ' + new Date(s.lastTick).toLocaleTimeString()) : '');
   }
 
   function copyReport() {
-    const s = state.stats;
-    const mins = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 60000) : 0;
-    const rep =
-      '⚡ Auto-Continue v2.0 Report\n⏱ Chala: ' + mins + ' min\n✅ Messages: ' +
-      s.sent + '\n🔁 Keep working: ' + s.kw + '\n🚨 CAPTCHA: ' + s.captcha;
+    const rep = buildReport();
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(rep).then(function () {
         setStatus('📋 Report copy ho gaya!', 'ok');
@@ -289,6 +293,69 @@
     } else {
       setStatus(rep, 'ok');
     }
+  }
+
+  function buildReport() {
+    const s = state.stats;
+    const mins = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 60000) : 0;
+    let rep =
+      '⚡ Auto-Continue v2.4 Report\n⏱ Chala: ' + mins + ' min\n✅ Messages: ' +
+      s.sent + '\n🔁 Keep working: ' + s.kw + '\n🚨 CAPTCHA: ' + s.captcha +
+      '\n📬 Queue bacha: ' + state.queue.length + '\n\n--- Last actions ---\n';
+    rep += state.log.slice(-25).map(function (l) {
+      return '[' + new Date(l.t).toLocaleTimeString() + '] ' + l.k + ': ' + l.d;
+    }).join('\n');
+    return rep;
+  }
+
+  function downloadReport() {
+    try {
+      const blob = new Blob([buildReport()], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'auto-continue-report.txt';
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+      setStatus('💾 Report download ho gayi!', 'ok');
+    } catch (e) {
+      setStatus('Download fail: ' + e.message, 'warn');
+    }
+  }
+
+  function log(kind, detail) {
+    state.log.push({ t: Date.now(), k: kind, d: detail });
+    if (state.log.length > 300) state.log.shift();
+  }
+
+  function renderQueue() {
+    const el = document.getElementById('ac-qlist');
+    if (!el) return;
+    el.innerHTML = state.queue.map(function (it, i) {
+      const label = it.type === 'file'
+        ? '📎 ' + it.file.name + (it.note ? ' + "' + it.note.slice(0, 15) + '"' : '')
+        : '✉️ ' + it.text.slice(0, 30);
+      return (
+        '<div class="ac-row" style="justify-content:space-between;background:rgba(148,163,184,.1);border-radius:8px;padding:3px 7px;">' +
+        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+        '<button class="ac-ibtn" data-qdel="' + i + '" style="width:18px;height:18px;font-size:10px;">✕</button></div>'
+      );
+    }).join('');
+    el.querySelectorAll('[data-qdel]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.queue.splice(Number(this.getAttribute('data-qdel')), 1);
+        renderQueue();
+      });
+    });
+  }
+
+  function pushQueueFile(file, tag) {
+    const ta = document.getElementById('ac-queue');
+    const note = ta ? ta.value.trim() : '';
+    state.queue.push({ type: 'file', file: file, note: note });
+    if (ta && note) ta.value = '';
+    log('QUEUE-FILE', file.name);
+    renderQueue();
+    setStatus(tag + ' File queue #' + state.queue.length + ': ' + file.name, 'ok');
   }
 
   /* ================= KEEP-ALIVE ================= */
@@ -524,8 +591,8 @@
     return fi;
   }
 
-  function attachPhoto(input, done) {
-    if (!state.photoFile) {
+  function attachFile(input, file, done) {
+    if (!file) {
       done(false, 'none');
       return;
     }
@@ -541,7 +608,7 @@
     let dt;
     try {
       dt = new DataTransfer();
-      dt.items.add(state.photoFile);
+      dt.items.add(file);
     } catch (e) {
       done(false, 'dt');
       return;
@@ -605,6 +672,7 @@
       if (gone) {
         state.stats.sent++;
         updateStats();
+        log('SENT', msg.slice(0, 40) + ' (' + how + ')');
         setStatus('✅ "' + msg + '" sent (' + how + ')', 'ok');
         return;
       }
@@ -613,6 +681,7 @@
         if (!input.isConnected || inputText(input).trim() === '') {
           state.stats.sent++;
           updateStats();
+          log('SENT', msg.slice(0, 40) + ' (Enter 2nd)');
           setStatus('✅ "' + msg + '" sent (Enter 2nd try)', 'ok');
         } else {
           setStatus('⚠️ Text type hua par SEND nahi hua', 'warn');
@@ -646,7 +715,11 @@
 
       // CAPTCHA guard
       if (captchaPresent()) {
-        if (!state.captchaSeen) { s.captcha++; updateStats(); }
+        if (!state.captchaSeen) {
+          s.captcha++;
+          updateStats();
+          log('CAPTCHA', 'detected — paused');
+        }
         state.captchaSeen = true;
         setStatus('🚨 CAPTCHA! Solve karo — script paused.', 'warn');
         return;
@@ -654,7 +727,7 @@
       state.captchaSeen = false;
 
       // Feedback widget ("Was this task successful?") khula hai?
-      const haveQueue = state.queue.trim() !== '';
+      const haveQueue = state.queue.length > 0;
       const kw = findKeepWorking();
       if (kw) {
         if (haveQueue || state.sendDraft) {
@@ -662,6 +735,7 @@
           const yes = findYesButton();
           if (yes) {
             yes.click();
+            log('YES', 'feedback yes — composer khula');
             setStatus('✅ "Yes" dabaya — ab queue/draft message bhejega', 'ok');
           } else {
             setStatus('Widget khula hai, Yes nahi mila… wait', 'wait');
@@ -677,6 +751,7 @@
         kw.click();
         s.kw++;
         updateStats();
+        log('KW', 'keep working clicked');
         setStatus('✅ "Keep working" dabaya', 'ok');
         return;
       }
@@ -695,35 +770,47 @@
       if (input.disabled || input.readOnly) { setStatus('Input disabled — AI busy ⏳', 'wait'); return; }
       const existing = inputText(input).trim();
 
-      // Queue message / composer draft / photo bhejo
+      // Queue item / composer draft bhejo
+      const item = haveQueue ? state.queue[0] : null;
       let msg = null;
+      let fileToSend = null;
       let fromQueue = false;
-      if (haveQueue) {
-        msg = state.queue;
+      if (item) {
         fromQueue = true;
+        if (item.type === 'msg') {
+          msg = item.text;
+        } else {
+          fileToSend = item.file;
+          msg = item.note || 'ye file dekho, iske hisaab se kaam karo';
+        }
       } else if (state.sendDraft && existing !== '') {
         msg = existing;
       }
-      if (msg || state.photoFile) {
-        const hasPhoto = !!state.photoFile;
-        const sentMsg = msg || (hasPhoto ? 'ye photo dekho, iske hisaab se kaam karo' : '');
+      if (msg || fileToSend) {
+        const sentMsg = msg;
         const fire = function () {
-          if (fromQueue || !msg) setInputText(input, sentMsg);
+          if (fromQueue || existing !== sentMsg) setInputText(input, sentMsg);
           setTimeout(function () { attemptSend(input, sentMsg); }, 300);
         };
-        if (fromQueue) state.queue = '';
         setStatus(
-          (hasPhoto ? '📷 ' : '') + (fromQueue ? '📨 Queue' : '✍️ Draft') +
-          ' message bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
+          (fileToSend ? '📎 ' : '') + (fromQueue ? '📨 Queue' : '✍️ Draft') +
+          ' bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
         );
-        if (hasPhoto) {
-          attachPhoto(input, function (ok, how) {
-            state.photoFile = null;
-            if (ok) setStatus('📷 Photo attach ho gayi (' + how + ') — message ja raha hai', 'ok');
+        const finish = function () {
+          if (fromQueue) {
+            state.queue.shift();
+            renderQueue();
+          }
+        };
+        if (fileToSend) {
+          attachFile(input, fileToSend, function (ok, how) {
+            if (ok) setStatus('📎 File attach ho gayi (' + how + ') — message ja raha hai', 'ok');
             else setStatus('⚠️ Attach detect nahi hua (' + how + ') — message phir bhi jayega', 'warn');
+            finish();
             fire();
           });
         } else {
+          finish();
           fire();
         }
         return;
