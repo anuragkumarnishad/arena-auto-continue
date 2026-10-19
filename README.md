@@ -1,6 +1,8 @@
 # ⚡ Arena Auto Continue
 
-**Latest: v2.0** — redesigned glassmorphism panel, color-coded status, live stat chips. ✨
+**Latest: v2.5** — multi-item queue (messages + any file), queue survives reloads,
+"queue khatam = stop" mode, live countdown, Alt+A hotkey, persistent stats,
+full report with action log + .txt download. ✨
 
 Keep your Arena.ai agent working while you're away. It automatically sends
 `continue` / `next` / `yes` / random positive messages, and clicks Arena's

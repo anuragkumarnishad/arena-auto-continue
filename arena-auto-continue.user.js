@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena Auto Continue
 // @namespace    https://arena.ai/
-// @version      2.3.0
+// @version      2.5.0
 // @description  Arena.ai chat mein auto continue/next/yes/random-positive + Keep working clicker + CAPTCHA guard + human timing + stats
 // @author       anuragkumarnishad
 // @match        https://arena.ai/*
@@ -40,6 +40,9 @@
     queue: [],
     photoFile: null,
     log: [],
+    stopOnEmpty: localStorage.getItem('arena-ac-stopempty') === '1',
+    nextAt: 0,
+    base: { sent: 0, kw: 0 },
     sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
   };
@@ -103,7 +106,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.4</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.5</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
@@ -124,7 +127,9 @@
       '<button class="ac-ibtn" id="ac-photo" title="Koi bhi file queue karo" style="width:32px;height:32px;font-size:15px;">📷</button>',
       '<button class="ac-ibtn" id="ac-clip" title="Clipboard se photo" style="width:32px;height:32px;font-size:15px;">📋</button>',
       '<label class="ac-chk"><input type="checkbox" id="ac-draft"' +
-        (state.sendDraft ? ' checked' : '') + '> draft auto</label></div>',
+        (state.sendDraft ? ' checked' : '') + '> draft</label>',
+      '<label class="ac-chk"><input type="checkbox" id="ac-stopempty"' +
+        (state.stopOnEmpty ? ' checked' : '') + '> queue khatam=stop</label></div>',
       '<div id="ac-qlist" style="max-height:100px;overflow:auto;display:flex;flex-direction:column;gap:4px;"></div>',
       '<button id="ac-toggle">▶ Start</button>',
       '<div id="ac-status">Ready — Start dabao 🚀</div>',
@@ -166,6 +171,11 @@
     panel.querySelector('#ac-draft').addEventListener('change', function () {
       state.sendDraft = this.checked;
       localStorage.setItem('arena-ac-draft', this.checked ? '1' : '0');
+    });
+
+    panel.querySelector('#ac-stopempty').addEventListener('change', function () {
+      state.stopOnEmpty = this.checked;
+      localStorage.setItem('arena-ac-stopempty', this.checked ? '1' : '0');
     });
 
     // Photo queue: file choose karo, agle message ke saath attach hogi
@@ -293,7 +303,15 @@
     el.innerHTML =
       chip('✅ ' + s.sent) + chip('🔁 ' + s.kw) + chip('🚨 ' + s.captcha) +
       chip('📬 ' + state.queue.length) + chip('⏱ ' + mins + 'm') +
+      (state.running && state.nextAt
+        ? chip('⏳ ' + Math.max(0, Math.round((state.nextAt - Date.now()) / 1000)) + 's')
+        : '') +
       (s.lastTick ? chip('🕐 ' + new Date(s.lastTick).toLocaleTimeString()) : '');
+    try {
+      localStorage.setItem('arena-ac-stats', JSON.stringify({
+        sent: s.sent, kw: s.kw, captcha: s.captcha
+      }));
+    } catch (e) {}
   }
 
   function copyReport() {
@@ -358,6 +376,11 @@
         renderQueue();
       });
     });
+    try {
+      localStorage.setItem('arena-ac-queue', JSON.stringify(state.queue.filter(function (it) {
+        return it.type === 'msg';
+      })));
+    } catch (e) {}
   }
 
   function pushQueueFile(file, tag) {
@@ -424,6 +447,7 @@
       wait += 120 + Math.floor(Math.random() * 180);
       setStatus('☕ Chai break — 2-4 min ruka hoon', 'wait');
     }
+    state.nextAt = Date.now() + wait * 1000;
     state.timer = setTimeout(function () {
       tick();
       if (state.running) scheduleNext();
@@ -709,7 +733,7 @@
     updateStats();
     try {
       const s = state.stats;
-      const total = s.sent + s.kw;
+      const total = (s.sent - state.base.sent) + (s.kw - state.base.kw);
 
       // Safety brake
       if (s.startedAt && (total >= MAX_ACTIONS || Date.now() - s.startedAt > MAX_HOURS * 3600000)) {
@@ -782,6 +806,21 @@
       if (input.disabled || input.readOnly) { setStatus('Input disabled — AI busy ⏳', 'wait'); return; }
       const existing = inputText(input).trim();
 
+      // Queue khatam + stop mode ON → so jao
+      if (!haveQueue && state.stopOnEmpty && existing === '') {
+        state.running = false;
+        clearTimeout(state.timer);
+        stopKeepAlive();
+        stopWsKeepAlive();
+        if (toggleBtnEl) {
+          toggleBtnEl.textContent = '▶ Start';
+          toggleBtnEl.classList.remove('stop');
+        }
+        log('STOP', 'queue khatam — auto stop');
+        setStatus('🏁 Queue khatam — auto stop. Naya queue daalo ya Start dabao.', 'ok');
+        return;
+      }
+
       // Queue item / composer draft bhejo
       const item = haveQueue ? state.queue[0] : null;
       let msg = null;
@@ -842,6 +881,33 @@
   }
 
   /* ================= BOOT ================= */
+  try {
+    const q = JSON.parse(localStorage.getItem('arena-ac-queue') || '[]');
+    if (Array.isArray(q)) {
+      state.queue = q.filter(function (it) { return it && it.type === 'msg' && it.text; });
+    }
+    const st = JSON.parse(localStorage.getItem('arena-ac-stats') || 'null');
+    if (st && typeof st === 'object') {
+      state.stats.sent = Number(st.sent) || 0;
+      state.stats.kw = Number(st.kw) || 0;
+      state.stats.captcha = Number(st.captcha) || 0;
+    }
+  } catch (e) {}
+  state.base = { sent: state.stats.sent, kw: state.stats.kw };
+
+  // Alt+A = Start/Stop shortcut
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey && (e.key === 'a' || e.key === 'A') && toggleBtnEl) {
+      e.preventDefault();
+      toggleBtnEl.click();
+    }
+  });
+
+  // Countdown chip live update
+  setInterval(function () {
+    if (state.running) updateStats();
+  }, 1000);
+
   if (document.body) initPanel();
   else document.addEventListener('DOMContentLoaded', initPanel);
 })();
