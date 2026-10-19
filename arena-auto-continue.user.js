@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena Auto Continue
 // @namespace    https://arena.ai/
-// @version      2.5.0
+// @version      2.6.0
 // @description  Arena.ai chat mein auto continue/next/yes/random-positive + Keep working clicker + CAPTCHA guard + human timing + stats
 // @author       anuragkumarnishad
 // @match        https://arena.ai/*
@@ -27,8 +27,8 @@
     'sure, keep going', 'haan, aage badho', 'theek hai, continue karo',
     'badiya, next step karo', 'ok bhai, proceed', 'haan bilkul'
   ];
-  const MAX_ACTIONS = 300;
-  const MAX_HOURS = 10;
+  const MAX_ACTIONS = 1000;
+  const MAX_HOURS = 24;
 
   const state = {
     running: false,
@@ -106,7 +106,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.5</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.6</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
@@ -766,13 +766,13 @@
       const haveQueue = state.queue.length > 0;
       const kw = findKeepWorking();
       if (kw) {
-        if (haveQueue || state.sendDraft) {
-          // Queue/draft bhejna hai → pehle Yes se widget band karo, composer wapas aayega
+        if (haveQueue) {
+          // Queue bhejna hai → pehle Yes se widget band karo, composer wapas aayega
           const yes = findYesButton();
           if (yes) {
             yes.click();
             log('YES', 'feedback yes — composer khula');
-            setStatus('✅ "Yes" dabaya — ab queue/draft message bhejega', 'ok');
+            setStatus('✅ "Yes" dabaya — ab queue message bhejega', 'ok');
           } else {
             setStatus('Widget khula hai, Yes nahi mila… wait', 'wait');
           }
