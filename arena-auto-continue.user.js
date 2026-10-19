@@ -38,6 +38,7 @@
     kwSeen: false,
     captchaSeen: false,
     queue: '',
+    photoFile: null,
     sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
   };
@@ -101,7 +102,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.1</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.2</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-min" title="Minimize">–</button>',
@@ -118,8 +119,9 @@
       '<textarea class="ac-input" id="ac-queue" rows="2"',
       ' placeholder="📨 Apna message queue karo — AI ka current kaam khatam hote hi chala jayega..."></textarea>',
       '<div class="ac-row"><button class="ac-qbtn" id="ac-qbtn">📨 Queue karo</button>',
+      '<button class="ac-ibtn" id="ac-photo" title="Photo queue karo" style="width:32px;height:32px;font-size:15px;">📷</button>',
       '<label class="ac-chk"><input type="checkbox" id="ac-draft"' +
-        (state.sendDraft ? ' checked' : '') + '> composer draft auto</label></div>',
+        (state.sendDraft ? ' checked' : '') + '> draft auto</label></div>',
       '<button id="ac-toggle">▶ Start</button>',
       '<div id="ac-status">Ready — Start dabao 🚀</div>',
       '<div id="ac-stats"></div>',
@@ -155,6 +157,22 @@
     panel.querySelector('#ac-draft').addEventListener('change', function () {
       state.sendDraft = this.checked;
       localStorage.setItem('arena-ac-draft', this.checked ? '1' : '0');
+    });
+
+    // Photo queue: file choose karo, agle message ke saath attach hogi
+    const fileSel = document.createElement('input');
+    fileSel.type = 'file';
+    fileSel.accept = 'image/*';
+    fileSel.style.display = 'none';
+    panel.appendChild(fileSel);
+    panel.querySelector('#ac-photo').addEventListener('click', function () {
+      fileSel.click();
+    });
+    fileSel.addEventListener('change', function () {
+      if (fileSel.files && fileSel.files[0]) {
+        state.photoFile = fileSel.files[0];
+        setStatus('📷 Photo ready: ' + state.photoFile.name + ' — agle message ke saath jayegi', 'ok');
+      }
     });
 
     intervalInput.addEventListener('change', function () {
@@ -465,6 +483,42 @@
     );
   }
 
+  /* ================= PHOTO ATTACH ================= */
+  function findFileInput() {
+    let fi = document.querySelector('input[type="file"][accept*="image" i]') ||
+      document.querySelector('input[type="file"]');
+    if (!fi) {
+      // Attach button click karke hidden input lao
+      const btns = document.querySelectorAll('button');
+      for (const b of btns) {
+        const l = ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')).toLowerCase();
+        if (/attach|upload|add file|image/.test(l) && isVisible(b)) {
+          b.click();
+          break;
+        }
+      }
+      fi = document.querySelector('input[type="file"]');
+    }
+    return fi;
+  }
+
+  function attachPhoto(done) {
+    const fi = findFileInput();
+    if (!fi || !state.photoFile) {
+      done(false);
+      return;
+    }
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(state.photoFile);
+      fi.files = dt.files;
+      fi.dispatchEvent(new Event('change', { bubbles: true }));
+      setTimeout(function () { done(true); }, 1500); // upload preview ke liye wait
+    } catch (e) {
+      done(false);
+    }
+  }
+
   /* ================= SENDING ================= */
   function attemptSend(input, msg) {
     const btn = findSendButton(input);
@@ -581,7 +635,7 @@
       if (input.disabled || input.readOnly) { setStatus('Input disabled — AI busy ⏳', 'wait'); return; }
       const existing = inputText(input).trim();
 
-      // Queue message ya composer draft bhejo
+      // Queue message / composer draft / photo bhejo
       let msg = null;
       let fromQueue = false;
       if (haveQueue) {
@@ -590,15 +644,26 @@
       } else if (state.sendDraft && existing !== '') {
         msg = existing;
       }
-      if (msg) {
-        if (fromQueue) setInputText(input, msg);
-        const sentMsg = msg;
-        setTimeout(function () { attemptSend(input, sentMsg); }, 300);
-        if (fromQueue) {
-          state.queue = '';
-          setStatus('📨 Queue message bheja: "' + sentMsg.slice(0, 30) + '"', 'ok');
+      if (msg || state.photoFile) {
+        const hasPhoto = !!state.photoFile;
+        const sentMsg = msg || (hasPhoto ? 'ye photo dekho, iske hisaab se kaam karo' : '');
+        const fire = function () {
+          if (fromQueue || !msg) setInputText(input, sentMsg);
+          setTimeout(function () { attemptSend(input, sentMsg); }, 300);
+        };
+        if (fromQueue) state.queue = '';
+        setStatus(
+          (hasPhoto ? '📷 ' : '') + (fromQueue ? '📨 Queue' : '✍️ Draft') +
+          ' message bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
+        );
+        if (hasPhoto) {
+          attachPhoto(function (ok) {
+            state.photoFile = null;
+            if (!ok) setStatus('⚠️ Photo attach nahi hui, message phir bhi jayega', 'warn');
+            fire();
+          });
         } else {
-          setStatus('✍️ Composer draft bheja: "' + sentMsg.slice(0, 30) + '"', 'ok');
+          fire();
         }
         return;
       }
