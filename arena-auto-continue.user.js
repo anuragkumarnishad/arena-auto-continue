@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena Auto Continue
 // @namespace    https://arena.ai/
-// @version      2.7.0
+// @version      2.8.0
 // @description  Arena.ai chat mein auto continue/next/yes/random-positive + Keep working clicker + CAPTCHA guard + human timing + stats
 // @author       anuragkumarnishad
 // @match        https://arena.ai/*
@@ -107,7 +107,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.7</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.8</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
@@ -388,10 +388,9 @@
     const ta = document.getElementById('ac-queue');
     const note = ta ? ta.value.trim() : '';
     state.queue.push({ type: 'file', file: file, note: note });
-    if (ta && note) ta.value = '';
     log('QUEUE-FILE', file.name);
     renderQueue();
-    setStatus(tag + ' File queue #' + state.queue.length + ': ' + file.name, 'ok');
+    setStatus(tag + ' File queue #' + state.queue.length + ': ' + file.name + (note ? ' + note' : ''), 'ok');
   }
 
   /* ================= KEEP-ALIVE ================= */
@@ -840,42 +839,63 @@
       // Queue item / composer draft bhejo
       const item = haveQueue ? state.queue[0] : null;
       let msg = null;
-      let fileToSend = null;
+      let filesToSend = [];
+      let batchCount = 0;
+      let noteUsed = '';
       let fromQueue = false;
       if (item) {
         fromQueue = true;
         if (item.type === 'msg') {
           msg = item.text;
+          batchCount = 1;
         } else {
-          fileToSend = item.file;
-          msg = item.note || 'ye file dekho, iske hisaab se kaam karo';
+          // Lagi hui saari consecutive files = EK batch = EK message, sab chips
+          while (batchCount < state.queue.length &&
+                 state.queue[batchCount].type === 'file' && filesToSend.length < 6) {
+            filesToSend.push(state.queue[batchCount].file);
+            if (!noteUsed && state.queue[batchCount].note) noteUsed = state.queue[batchCount].note;
+            batchCount++;
+          }
+          msg = noteUsed || 'ye file dekho, iske hisaab se kaam karo';
         }
       } else if (state.sendDraft && existing !== '') {
         msg = existing;
       }
-      if (msg || fileToSend) {
+      if (msg || filesToSend.length) {
         const sentMsg = msg;
         const fire = function () {
           if (fromQueue || existing !== sentMsg) setInputText(input, sentMsg);
           setTimeout(function () { attemptSend(input, sentMsg); }, 300);
         };
         setStatus(
-          (fileToSend ? '📎 ' : '') + (fromQueue ? '📨 Queue' : '✍️ Draft') +
+          (filesToSend.length ? '📎 ' + filesToSend.length + 'x ' : '') +
+          (fromQueue ? '📨 Queue' : '✍️ Draft') +
           ' bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
         );
         const finish = function () {
           if (fromQueue) {
-            state.queue.shift();
+            state.queue.splice(0, batchCount);
+            const ta = document.getElementById('ac-queue');
+            if (ta && noteUsed && ta.value.trim() === noteUsed) ta.value = '';
             renderQueue();
           }
         };
-        if (fileToSend) {
-          attachFile(input, fileToSend, function (ok, how) {
-            if (ok) setStatus('📎 File attach ho gayi (' + how + ') — message ja raha hai', 'ok');
-            else setStatus('⚠️ Attach detect nahi hua (' + how + ') — message phir bhi jayega', 'warn');
-            finish();
-            fire();
-          });
+        if (filesToSend.length) {
+          let idx = 0;
+          const next = function () {
+            if (idx >= filesToSend.length) {
+              setStatus('📎 Sab files attach — message ja raha hai', 'ok');
+              finish();
+              fire();
+              return;
+            }
+            const f = filesToSend[idx++];
+            attachFile(input, f, function (ok, how) {
+              if (!ok) setStatus('⚠️ ' + f.name + ' attach detect nahi (' + how + ') — phir bhi try', 'warn');
+              next();
+            });
+          };
+          next();
         } else {
           finish();
           fire();
