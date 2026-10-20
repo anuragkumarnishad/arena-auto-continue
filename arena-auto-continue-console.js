@@ -621,14 +621,22 @@
       done(false, 'none');
       return;
     }
-    const scope =
-      (input.closest &&
-        (input.closest('form') || input.closest('[class*="composer"], [class*="chat"]'))) ||
-      document;
+    // Composer ka chhota container dhoondo (poora page nahi) — chips wahin bante hain
+    let scope = input;
+    for (let i = 0; scope && scope.parentElement && i < 6; i++) {
+      const p = scope.parentElement;
+      if ((p.textContent || '').length > 3000) break;
+      scope = p;
+    }
+    if (!scope || scope === input) scope = document;
     function seen() {
-      return !!scope.querySelector(
-        'img[src^="blob:"], [class*="attachment" i], [class*="attach" i] img, [data-testid*="attach" i]'
-      );
+      if (scope.querySelector &&
+          scope.querySelector('img[src^="blob:"], [class*="attachment" i], [class*="attach" i] img, [data-testid*="attach" i]')) return true;
+      // Chip ka filename composer mein dikha = attach pakka ho gaya
+      try {
+        if (file.name && (scope.textContent || '').indexOf(file.name) !== -1) return true;
+      } catch (e) {}
+      return false;
     }
     let dt;
     try {
