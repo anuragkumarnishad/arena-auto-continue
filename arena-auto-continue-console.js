@@ -30,6 +30,7 @@
     log: [],
     stopOnEmpty: localStorage.getItem('arena-ac-stopempty') === '1',
     nextAt: 0,
+    prevTick: 0,
     base: { sent: 0, kw: 0 },
     sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
@@ -94,7 +95,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.6</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.7</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
@@ -638,36 +639,36 @@
       return;
     }
 
-    // Try 1: paste event (zyada tar chat UIs paste se upload karte hain)
-    try {
-      input.dispatchEvent(new ClipboardEvent('paste', {
-        bubbles: true, cancelable: true, clipboardData: dt
-      }));
-    } catch (e) {}
-    setTimeout(function () {
-      if (seen()) { done(true, 'paste'); return; }
-      // Try 2: drop event
+    // Try 1: hidden file input (sabse standard tarika)
+    const fi = findFileInput();
+    if (fi) {
       try {
-        input.dispatchEvent(new DragEvent('drop', {
-          bubbles: true, cancelable: true, dataTransfer: dt
+        fi.files = dt.files;
+        fi.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (e) {}
+    }
+    setTimeout(function () {
+      if (seen()) { done(true, 'file-input'); return; }
+      // Try 2: paste event
+      try {
+        input.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true, cancelable: true, clipboardData: dt
         }));
       } catch (e) {}
       setTimeout(function () {
-        if (seen()) { done(true, 'drop'); return; }
-        // Try 3: hidden file input change
-        const fi = findFileInput();
-        if (fi) {
-          try {
-            fi.files = dt.files;
-            fi.dispatchEvent(new Event('change', { bubbles: true }));
-          } catch (e) {}
-        }
+        if (seen()) { done(true, 'paste'); return; }
+        // Try 3: drop event
+        try {
+          input.dispatchEvent(new DragEvent('drop', {
+            bubbles: true, cancelable: true, dataTransfer: dt
+          }));
+        } catch (e) {}
         setTimeout(function () {
           const ok = seen();
-          done(ok, ok ? 'file-input' : 'blind');
-        }, 1300);
-      }, 1300);
-    }, 1300);
+          done(ok, ok ? 'drop' : 'blind');
+        }, 1500);
+      }, 1500);
+    }, 1500);
   }
 
   /* ================= SENDING ================= */
@@ -717,6 +718,13 @@
   /* ================= MAIN LOOP ================= */
   function tick() {
     if (!state.running) return;
+    // Freeze detect: pichla tick bahut purana = browser ne tab sulaya tha
+    if (state.prevTick && Date.now() - state.prevTick > Math.max(90000, state.intervalSec * 4000)) {
+      const gapMin = Math.round((Date.now() - state.prevTick) / 60000);
+      log('SLEEP', gapMin + ' min tab soya');
+      setStatus('😴 Tab ' + gapMin + ' min SOYA tha! BG fix: Memory Saver OFF + DevTools undock + window visible rakho', 'warn');
+    }
+    state.prevTick = Date.now();
     state.stats.lastTick = Date.now();
     updateStats();
     try {
