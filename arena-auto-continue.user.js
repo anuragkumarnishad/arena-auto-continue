@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena Auto Continue
 // @namespace    https://arena.ai/
-// @version      2.8.0
+// @version      2.9.0
 // @description  Arena.ai chat mein auto continue/next/yes/random-positive + Keep working clicker + CAPTCHA guard + human timing + stats
 // @author       anuragkumarnishad
 // @match        https://arena.ai/*
@@ -43,6 +43,8 @@
     stopOnEmpty: localStorage.getItem('arena-ac-stopempty') === '1',
     nextAt: 0,
     prevTick: 0,
+    idleStreak: 0,
+    retryAt: 0,
     base: { sent: 0, kw: 0 },
     sendDraft: localStorage.getItem('arena-ac-draft') !== '0',
     stats: { sent: 0, kw: 0, captcha: 0, startedAt: 0, lastTick: 0 }
@@ -107,7 +109,7 @@
     panel.innerHTML = [
       '<div id="ac-head">',
       '<span class="ac-dot" id="ac-dot"></span>',
-      '<b>Auto-Continue</b><span class="ac-ver">v2.8</span>',
+      '<b>Auto-Continue</b><span class="ac-ver">v2.9</span>',
       '<span class="sp"></span>',
       '<button class="ac-ibtn" id="ac-report" title="Report copy karo">📋</button>',
       '<button class="ac-ibtn" id="ac-dl" title="Report download karo (.txt)">💾</button>',
@@ -691,26 +693,27 @@
   }
 
   /* ================= SENDING ================= */
-  function attemptSend(input, msg) {
+  function attemptSend(input, msg, cb) {
     const btn = findSendButton(input);
     if (btn && !btn.disabled) {
       btn.click();
-      verifySent(input, msg, 'Send button');
+      verifySent(input, msg, 'Send button', cb);
       return;
     }
     const form = input.closest && input.closest('form');
     if (form && form.requestSubmit) {
       try {
         form.requestSubmit();
-        verifySent(input, msg, 'Form submit');
+        verifySent(input, msg, 'Form submit', cb);
         return;
       } catch (e) {}
     }
     pressEnter(input);
-    verifySent(input, msg, 'Enter key');
+    verifySent(input, msg, 'Enter key', cb);
   }
 
-  function verifySent(input, msg, how) {
+  function verifySent(input, msg, how, cb) {
+    const done = cb || function () {};
     setTimeout(function () {
       const gone = !input.isConnected || inputText(input).trim() === '';
       if (gone) {
@@ -718,6 +721,7 @@
         updateStats();
         log('SENT', msg.slice(0, 40) + ' (' + how + ')');
         setStatus('✅ "' + msg + '" sent (' + how + ')', 'ok');
+        done(true);
         return;
       }
       pressEnter(input);
@@ -727,11 +731,33 @@
           updateStats();
           log('SENT', msg.slice(0, 40) + ' (Enter 2nd)');
           setStatus('✅ "' + msg + '" sent (Enter 2nd try)', 'ok');
+          done(true);
         } else {
           setStatus('⚠️ Text type hua par SEND nahi hua', 'warn');
+          done(false);
         }
       }, 700);
     }, 700);
+  }
+
+  function cleanComposer(input) {
+    try {
+      let scope = input;
+      for (let i = 0; scope && scope.parentElement && i < 6; i++) {
+        const p = scope.parentElement;
+        if ((p.textContent || '').length > 3000) break;
+        scope = p;
+      }
+      scope.querySelectorAll('button, [role="button"]').forEach(function (b) {
+        const lab = ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')).toLowerCase();
+        const txt = (b.textContent || '').trim();
+        const isX = txt === '×' || txt === '✕';
+        if (/remove|delete|hatao/.test(lab) || (isX && lab.length < 60)) {
+          try { b.click(); } catch (e) {}
+        }
+      });
+      setInputText(input, '');
+    } catch (e) {}
   }
 
   /* ================= MAIN LOOP ================= */
@@ -809,10 +835,21 @@
       state.kwSeen = false;
 
       if (hasStopButton()) {
+        state.idleStreak = 0;
         setStatus(
           haveQueue ? 'AI busy — free hote hi QUEUE message jayega ⏳' : 'AI reply likh rahi hai… wait ⏳',
           'wait'
         );
+        return;
+      }
+      // Double-check: AI sach mein free hai (thinking-gap galatfahmi se bacho)
+      state.idleStreak = (state.idleStreak || 0) + 1;
+      if (state.idleStreak < 2) {
+        setStatus('👀 Idle double-check… (' + state.idleStreak + '/2)', 'wait');
+        return;
+      }
+      if (state.retryAt && Date.now() < state.retryAt) {
+        setStatus('⏳ Send retry ka intezar… ' + Math.round((state.retryAt - Date.now()) / 1000) + 's', 'wait');
         return;
       }
 
@@ -865,19 +902,25 @@
         const sentMsg = msg;
         const fire = function () {
           if (fromQueue || existing !== sentMsg) setInputText(input, sentMsg);
-          setTimeout(function () { attemptSend(input, sentMsg); }, 300);
+          setTimeout(function () { attemptSend(input, sentMsg, finish); }, 300);
         };
         setStatus(
           (filesToSend.length ? '📎 ' + filesToSend.length + 'x ' : '') +
           (fromQueue ? '📨 Queue' : '✍️ Draft') +
           ' bheja: "' + sentMsg.slice(0, 25) + '"', 'ok'
         );
-        const finish = function () {
-          if (fromQueue) {
+        const finish = function (ok) {
+          if (ok && fromQueue) {
             state.queue.splice(0, batchCount);
             const ta = document.getElementById('ac-queue');
             if (ta && noteUsed && ta.value.trim() === noteUsed) ta.value = '';
             renderQueue();
+          }
+          if (!ok && fromQueue) {
+            cleanComposer(input);
+            state.idleStreak = 0;
+            state.retryAt = Date.now() + 45000;
+            setStatus('⚠️ Send fail — queue SAFE hai, composer saaf kiya, 45s mein retry', 'warn');
           }
         };
         if (filesToSend.length) {
@@ -885,7 +928,6 @@
           const next = function () {
             if (idx >= filesToSend.length) {
               setStatus('📎 Sab files attach — message ja raha hai', 'ok');
-              finish();
               fire();
               return;
             }
@@ -897,7 +939,6 @@
           };
           next();
         } else {
-          finish();
           fire();
         }
         return;
